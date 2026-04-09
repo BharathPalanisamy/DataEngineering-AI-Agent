@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: dcp_postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-dcp_db}
+      POSTGRES_USER: ${POSTGRES_USER:-dcp_user}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-dcp_pass}
+    ports:
+      - "5436:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U dcp_user"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    driver: local

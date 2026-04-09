@@ -1,0 +1,12 @@
+{
+  "servers": {
+    "dataControlPlane": {
+      "type": "stdio",
+      "command": "/Users/bharathpalanisamy/Documents/AI_agent_project/.venv/bin/python",
+      "args": [
+        "/Users/bharathpalanisamy/Documents/AI_agent_project/mcp_server/server.py"
+      ],
+      "envFile": "${workspaceFolder}/.env"
+    }
+  }
+}
