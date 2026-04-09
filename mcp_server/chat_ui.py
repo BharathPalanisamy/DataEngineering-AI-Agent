@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
 
 import uvicorn
+from openai import OpenAI
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
@@ -30,6 +32,8 @@ KNOWN_SOURCES = [
     "product_search_details",
     "walmart_reviews",
 ]
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
 
 def detect_source(question: str) -> str | None:
@@ -151,6 +155,121 @@ def format_recent_history() -> str:
     return "\n".join(lines)
 
 
+def format_next_step_recommendation() -> str:
+    overview = get_pipeline_overview()
+    failing_sources = [row for row in overview["sources"] if row.get("status_color") == "RED"]
+    warning_sources = [row for row in overview["sources"] if row.get("status_color") == "YELLOW"]
+
+    lines = ["Recommended next steps:"]
+
+    if failing_sources:
+        top_issue = failing_sources[0]
+        details = top_issue.get("details") or {}
+        notes = details.get("notes", [])
+        lines.append(
+            f"1. Fix `{top_issue['source']}` first because it is currently failing and is the main reason the pipeline is critical."
+        )
+        if notes:
+            lines.append(f"   Reason: {notes[0]}")
+        lines.append("   Action: retry the ingestion call and validate the API credentials, access rules, or endpoint availability.")
+
+    if warning_sources:
+        for idx, source in enumerate(warning_sources, start=2):
+            lines.append(
+                f"{idx}. Review `{source['source']}` for non-breaking schema drift and decide whether downstream mappings should be updated."
+            )
+
+    incidents = list_open_incidents(limit=5)
+    if incidents:
+        lines.append(f"- There are also {len(incidents)} open incidents worth reviewing after the active failure is addressed.")
+
+    if not failing_sources and not warning_sources:
+        lines.append("1. No urgent fixes are needed right now. Continue normal monitoring and review recent schema drift for potential downstream updates.")
+
+    return "\n".join(lines)
+
+
+def should_use_llm(question: str) -> bool:
+    lowered = question.lower()
+    llm_triggers = [
+        "summarize",
+        "summary",
+        "plain english",
+        "explain",
+        "what should i fix first",
+        "what should i do next",
+        "recommend",
+        "priority",
+        "stakeholder",
+        "team update",
+        "status update",
+        "short update",
+        "for my team",
+        "for the team",
+        "non-technical",
+        "why is",
+        "why are",
+    ]
+    return bool(OPENAI_API_KEY) and any(trigger in lowered for trigger in llm_triggers)
+
+
+def build_llm_context(question: str, source: str | None, structured_answer: str) -> dict[str, Any]:
+    context: dict[str, Any] = {
+        "question": question,
+        "structured_answer": structured_answer,
+        "pipeline_overview": get_pipeline_overview(),
+    }
+
+    if source:
+        context["source_status"] = get_source_status(source)
+
+    lowered = question.lower()
+    if "incident" in lowered:
+        context["open_incidents"] = list_open_incidents(limit=5)
+
+    if any(term in lowered for term in ["schema drift", "added", "removed", "previous day", "current day"]):
+        context["schema_drift"] = get_latest_schema_drift(source)
+
+    return context
+
+
+def generate_llm_answer(question: str, structured_answer: str, source: str | None = None) -> str | None:
+    if not OPENAI_API_KEY:
+        return None
+
+    context = build_llm_context(question, source, structured_answer)
+    prompt = f"""
+You are an AI assistant for a data engineering control plane.
+Answer the user's question using ONLY the monitoring context below.
+
+Rules:
+- Be concise and clear.
+- Preserve the exact facts, source names, counts, and errors from the context.
+- If the user asks for plain English, summarize naturally for a non-technical person.
+- If the user asks what to fix first or what to do next, give a short prioritized recommendation with concrete actions.
+- If the user asks for a team or stakeholder update, write a short polished update they could share directly.
+- Prefer numbered steps when giving recommendations.
+- Do not invent data that is not present.
+
+User question:
+{question}
+
+Monitoring context:
+{json.dumps(context, indent=2)}
+""".strip()
+
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        response = client.responses.create(
+            model=OPENAI_MODEL,
+            input=prompt,
+        )
+        answer = (response.output_text or "").strip()
+        return answer or None
+    except Exception:
+        return None
+
+
 def build_change_lines(title: str, items: list[str]) -> list[str]:
     if not items:
         return []
@@ -226,6 +345,8 @@ def answer_question(question: str) -> dict[str, Any]:
 
     if is_schema_drift_question:
         answer = format_latest_schema_drift(source)
+    elif any(phrase in lowered for phrase in ["what should i fix first", "what should i do next", "recommend", "next step", "priority"]):
+        answer = format_next_step_recommendation()
     elif source and any(word in lowered for word in ["source", "status", "show", "details", "amazon", "walmart", "openfoodfacts", "product"]):
         answer = format_source_status(source)
     elif "why" in lowered and "critical" in lowered:
@@ -246,12 +367,17 @@ def answer_question(question: str) -> dict[str, Any]:
     else:
         answer = format_pipeline_overview()
 
+    if should_use_llm(cleaned):
+        llm_answer = generate_llm_answer(cleaned, answer, source)
+        if llm_answer:
+            answer = llm_answer
+
     return {
         "answer": answer,
         "suggestions": [
-            "Show me the latest schema drift changes",
-            "Show me the schema drift for walmart_reviews",
-            "Which source failed today?",
+            "What should I fix first?",
+            "What do you recommend I do next?",
+            "Write a short update for my team",
             "Do we have any open incidents?",
         ],
     }
