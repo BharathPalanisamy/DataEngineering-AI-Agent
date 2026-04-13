@@ -25,13 +25,15 @@
       color: var(--text);
       min-height: 100vh;
       display: flex;
-      justify-content: center;
+      flex-direction: column;
       align-items: center;
       padding: 24px;
+      gap: 20px;
     }
     .app {
       width: min(980px, 100%);
-      height: min(760px, 92vh);
+      height: min(720px, 85vh);
+      flex-shrink: 0;
       display: grid;
       grid-template-rows: auto 1fr auto;
       background: rgba(18, 26, 43, 0.96);
@@ -39,6 +41,45 @@
       border-radius: 18px;
       box-shadow: 0 20px 60px rgba(0, 0, 0, 0.35);
       overflow: hidden;
+    }
+    .drift-section {
+      width: min(980px, 100%);
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      overflow: hidden;
+      background: rgba(18, 26, 43, 0.96);
+      box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
+    }
+    .drift-section summary {
+      list-style: none;
+      padding: 14px 20px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--accent);
+      border-bottom: 1px solid transparent;
+      user-select: none;
+    }
+    .drift-section[open] summary {
+      border-bottom-color: var(--border);
+    }
+    .drift-section summary::before {
+      content: '▶';
+      font-size: 10px;
+      transition: transform 0.2s;
+    }
+    .drift-section[open] summary::before {
+      transform: rotate(90deg);
+    }
+    .drift-section summary::-webkit-details-marker { display: none; }
+    .drift-section iframe {
+      width: 100%;
+      height: 600px;
+      border: none;
+      display: block;
     }
     .header {
       padding: 18px 22px;
@@ -139,11 +180,15 @@
     </div>
 
     <div id="messages" class="messages">
-      <div class="bubble bot">Hi — I’m your pipeline assistant.
-Try one of these:
-- What is the latest pipeline status?
-- Show me the latest schema drift changes
-- Show me the schema drift for walmart_reviews</div>
+      <div class="bubble bot">Hey! I'm Pipeline Sentinel — your AI assistant for data pipeline health. 👋
+
+I can help you with:
+- Pipeline status and source health
+- Schema drift detection and history
+- Root cause explanations and recommendations
+- Stakeholder-ready status updates
+
+Just ask me anything — or say hello to get started.</div>
     </div>
 
     <div class="composer">
@@ -155,6 +200,11 @@ Try one of these:
       <div class="status">Connected to the local monitoring backend.</div>
     </div>
   </div>
+
+  <details class="drift-section" open>
+    <summary>Schema Drift Chart — attribute changes per pull across all sources</summary>
+    <iframe src="/drift-chart" title="Schema Drift Chart"></iframe>
+  </details>
 
   <script>
     const messages = document.getElementById('messages');

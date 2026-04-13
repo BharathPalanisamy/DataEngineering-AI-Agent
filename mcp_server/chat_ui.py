@@ -26,6 +26,7 @@ from mcp_server.server import (
 )
 
 CHAT_HTML = ROOT_DIR / "orchestrator" / "ui" / "chat_window.html"
+DRIFT_CHART_HTML = ROOT_DIR / "orchestrator" / "ui" / "schema_drift_chart.html"
 KNOWN_SOURCES = [
     "amazon_products",
     "openfoodfacts_snacks",
@@ -70,7 +71,9 @@ def format_pipeline_overview() -> str:
     ]
 
     for row in overview["sources"]:
-        lines.append(f"- {row['source']}: {row['summary']}")
+        details = row.get("details") or {}
+        last_pulled = details.get("latest_fetched_at") or details.get("last_finished_at") or "Unknown"
+        lines.append(f"- {row['source']}: {row['summary']} (last pulled: {last_pulled})")
 
     return "\n".join(lines)
 
@@ -189,28 +192,22 @@ def format_next_step_recommendation() -> str:
     return "\n".join(lines)
 
 
+CONVERSATIONAL_PATTERNS = [
+    "hello", "hi", "hey", "good morning", "good afternoon", "good evening",
+    "how are you", "what are you", "who are you", "what can you do",
+    "what do you do", "help me", "thanks", "thank you", "awesome", "great",
+    "cool", "nice", "sounds good", "got it", "ok", "okay", "sure", "bye",
+    "goodbye", "see you", "cheers", "appreciate",
+]
+
+
+def is_conversational(question: str) -> bool:
+    lowered = question.lower().strip()
+    return any(lowered.startswith(p) or lowered == p for p in CONVERSATIONAL_PATTERNS)
+
+
 def should_use_llm(question: str) -> bool:
-    lowered = question.lower()
-    llm_triggers = [
-        "summarize",
-        "summary",
-        "plain english",
-        "explain",
-        "what should i fix first",
-        "what should i do next",
-        "recommend",
-        "priority",
-        "stakeholder",
-        "team update",
-        "status update",
-        "short update",
-        "for my team",
-        "for the team",
-        "non-technical",
-        "why is",
-        "why are",
-    ]
-    return bool(OPENAI_API_KEY) and any(trigger in lowered for trigger in llm_triggers)
+    return bool(OPENAI_API_KEY)
 
 
 def build_llm_context(question: str, source: str | None, structured_answer: str) -> dict[str, Any]:
@@ -239,22 +236,23 @@ def generate_llm_answer(question: str, structured_answer: str, source: str | Non
 
     context = build_llm_context(question, source, structured_answer)
     prompt = f"""
-You are an AI assistant for a data engineering control plane.
-Answer the user's question using ONLY the monitoring context below.
+You are Pipeline Sentinel, a professional and friendly AI assistant for a data engineering control plane.
+Your personality: confident, clear, and warm — like a senior data engineer who explains things simply.
 
 Rules:
-- Be concise and clear.
-- Preserve the exact facts, source names, counts, and errors from the context.
-- If the user asks for plain English, summarize naturally for a non-technical person.
-- If the user asks what to fix first or what to do next, give a short prioritized recommendation with concrete actions.
-- If the user asks for a team or stakeholder update, write a short polished update they could share directly.
-- Prefer numbered steps when giving recommendations.
-- Do not invent data that is not present.
+- For greetings or small talk, respond naturally and briefly. Mention you're a pipeline assistant and offer to help.
+- For pipeline questions, answer using the monitoring context below. Be concise and specific.
+- Preserve exact facts, source names, counts, and error messages from the context.
+- For plain-English requests, summarize naturally for a non-technical person.
+- For "what to fix" or "next steps", give a short numbered prioritized recommendation.
+- For team/stakeholder updates, write a polished message they can share directly.
+- Never invent data that is not in the context.
+- Do not start every response with "I" — vary your openings.
 
-User question:
+User message:
 {question}
 
-Monitoring context:
+Monitoring context (use only when relevant):
 {json.dumps(context, indent=2)}
 """.strip()
 
@@ -321,14 +319,25 @@ def answer_question(question: str) -> dict[str, Any]:
     cleaned = (question or "").strip()
     lowered = cleaned.lower()
 
+    default_suggestions = [
+        "What is the latest pipeline status?",
+        "Show me the latest schema drift changes",
+        "Why is the pipeline critical?",
+        "What should I fix first?",
+    ]
+
     if not cleaned:
         return {
-            "answer": "Ask about pipeline status, schema drift, failed sources, open incidents, or a specific source.",
-            "suggestions": [
-                "What is the latest pipeline status?",
-                "Show me the latest schema drift changes",
-                "Why is the pipeline critical?",
-            ],
+            "answer": "Hey! I'm Pipeline Sentinel — your data pipeline assistant. Ask me about pipeline health, schema drift, incidents, or a specific source.",
+            "suggestions": default_suggestions,
+        }
+
+    # Route conversational messages straight to the LLM
+    if is_conversational(cleaned) and OPENAI_API_KEY:
+        llm_answer = generate_llm_answer(cleaned, "", None)
+        return {
+            "answer": llm_answer or "Hey! Ask me about your pipeline health, schema drift, or open incidents.",
+            "suggestions": default_suggestions,
         }
 
     source = detect_source(lowered)
@@ -387,6 +396,12 @@ async def homepage(_: Request) -> HTMLResponse:
     return HTMLResponse(CHAT_HTML.read_text(encoding="utf-8"))
 
 
+async def drift_chart(_: Request) -> HTMLResponse:
+    if not DRIFT_CHART_HTML.exists():
+        return HTMLResponse("<p style='color:#9fb0d1;font-family:sans-serif;padding:24px'>Schema drift chart not yet generated. Run the monitor cycle first.</p>")
+    return HTMLResponse(DRIFT_CHART_HTML.read_text(encoding="utf-8"))
+
+
 async def chat(request: Request) -> JSONResponse:
     try:
         payload = await request.json()
@@ -402,6 +417,7 @@ app = Starlette(
     debug=True,
     routes=[
         Route("/", homepage),
+        Route("/drift-chart", drift_chart),
         Route("/api/chat", chat, methods=["POST"]),
     ],
 )
